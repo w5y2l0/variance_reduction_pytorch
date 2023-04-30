@@ -9,7 +9,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import torch.optim as optim
 from trainingmonitor import TrainingMonitor
-from optimizer import Lookahead,STORM
+from optimizer import Lookahead,STORM,SAGA,SARAH,SVRG
 import wandb
 wandb.login()
 
@@ -26,7 +26,7 @@ model.to(device)
 parser = argparse.ArgumentParser(description='CIFAR10')
 parser.add_argument("--model", type=str, default='ResNet18')
 parser.add_argument("--task", type=str, default='image')
-parser.add_argument("--optimizer", default='storm',type=str,choices=['lookahead','adam','storm'])
+parser.add_argument("--optimizer", default='sarah',type=str,choices=['lookahead','adam','storm','saga','sarah','svrg'])
 args = parser.parse_args()
 
 if args.optimizer == 'lookahead':
@@ -37,6 +37,18 @@ elif args.optimizer == 'storm':
     arch = 'ResNet18_storm_adam'
     # optimizer = optim.Adam(model.parameters(), lr=0.001)
     optimizer = STORM(model.parameters(),k=0.1, w=0.1, c=1, weight_decay=0) 
+elif args.optimizer == 'saga':
+    arch = 'ResNet18_saga_adam'
+    # optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = SAGA(model.parameters(),lr=0.001,weight_decay=0) 
+elif args.optimizer == 'sarah':
+    arch = 'ResNet18_sarah_adam'
+    # optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = SARAH(model.parameters(),lr=0.001) 
+elif args.optimizer == 'svrg':
+    arch = 'ResNet18_svrg_adam'
+    # optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = SVRG(model.parameters(),lr=0.001) 
 else:
     arch = 'ResNet18_Adam'
     optimizer = optim.Adam(model.parameters(), lr=0.001)

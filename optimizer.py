@@ -3,7 +3,7 @@ import torch
 import itertools as it
 from torch.optim import Optimizer
 from collections import defaultdict
-
+from torch.optim.optimizer import Optimizer, required
 class Lookahead(Optimizer):
     '''
     PyTorch implementation of the lookahead wrapper.
@@ -98,6 +98,7 @@ class Lookahead(Optimizer):
                         self.optimizer.state[p]["momentum_buffer"] = torch.zeros_like(p.data)
 
         return loss
+    
 class STORM(Optimizer):
     r"""Implements STORM algorithm.
 
@@ -183,5 +184,173 @@ class STORM(Optimizer):
                 # Change in state for next optimization step
                 a = c*(learning_rate**2)
                 prev_grad = grad
+
+        return loss
+
+
+class SAGA(Optimizer):
+    """
+    PyTorch implementation of the SAGA optimizer.
+    SAGA: A Fast Incremental Gradient Method With Support for Non-Strongly Convex Composite Objectives
+    https://arxiv.org/abs/1407.0202
+    """
+    def __init__(self, params, lr=1e-2, momentum=0, weight_decay=0):
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+        self.state = defaultdict(dict)
+
+        for group in self.param_groups:
+            for p in group['params']:
+                state = self.state[p]
+                state['g'] = torch.zeros_like(p.data)
+                state['prev_grad'] = torch.zeros_like(p.data)
+                state['momentum_buffer'] = torch.zeros_like(p.data)
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            lr = group['lr']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data
+                state = self.state[p]
+
+                # SAGA update
+                g = state['g']
+                prev_grad = state['prev_grad']
+                g.add_(-prev_grad).add_(grad)
+                state['prev_grad'] = grad.clone()
+                p.data.add_(-lr, (g / len(self.param_groups)) + weight_decay * p.data)
+
+                # Momentum
+                if momentum != 0:
+                    buf = state['momentum_buffer']
+                    buf.mul_(momentum).add_(p.grad.data)
+                    p.data.add_(-lr, buf)
+
+                # Weight decay
+                if weight_decay != 0:
+                    p.data.add_(-lr * weight_decay, p.data)
+
+        return loss
+    
+
+class SVRG(Optimizer):
+    r""" implement SVRG """ 
+
+    def __init__(self, params, lr=required, freq =10):
+        if lr is not required and lr < 0.0:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+
+        defaults = dict(lr=lr, freq=freq)
+        self.counter = 0
+        self.counter2 = 0
+        self.flag = False
+        super(SVRG, self).__init__(params, defaults)
+
+    def __setstate__(self, state):
+        super(SVRG, self).__setstate__(state)
+        # for group in self.param_groups:
+        #     group.setdefault('m', )
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            freq = group['freq']
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                d_p = p.grad.data
+                param_state = self.state[p]
+                
+                if 'large_batch' not in param_state:
+                    buf = param_state['large_batch'] = torch.zeros_like(p.data)
+                    buf.add_(d_p) #add first large, low variance batch
+                    #need to add the second term in the step equation; the gradient for the original step!
+                    buf2 = param_state['small_batch'] = torch.zeros_like(p.data)
+
+                buf = param_state['large_batch']
+                buf2 = param_state['small_batch']
+
+                if self.counter == freq:
+                    buf.data = d_p.clone() #copy new large batch. Begining of new inner loop
+                    temp = torch.zeros_like(p.data)
+                    buf2.data = temp.clone()
+                    
+                if self.counter2 == 1:
+                    buf2.data.add_(d_p) #first small batch gradient for inner loop!
+
+                #dont update parameters when computing large batch (low variance gradients)
+                if self.counter != freq and self.flag != False:
+                    p.data.add_(-group['lr'], (d_p - buf2 + buf) )
+
+        self.flag = True #rough way of not updating the weights the FIRST time we calculate the large batch gradient
+        
+        if self.counter == freq:
+            self.counter = 0
+            self.counter2 = 0
+
+        self.counter += 1    
+        self.counter2 += 1
+
+        return loss
+
+
+
+class SARAH(Optimizer):
+    def __init__(self, params, lr=1e-3, momentum=0, weight_decay=0, nesterov=False):
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay, nesterov=nesterov)
+        super(SARAH, self).__init__(params, defaults)
+        self.state['t'] = 0
+        self.state['grad_sum'] = [torch.zeros_like(p.data) for p in self.param_groups[0]['params']]
+        self.state['grad_avg'] = [torch.zeros_like(p.data) for p in self.param_groups[0]['params']]
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            lr = group['lr']
+            momentum = group['momentum']
+            weight_decay = group['weight_decay']
+            nesterov = group['nesterov']
+
+            for i, p in enumerate(group['params']):
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+
+                if self.state['t'] == 0:
+                    self.state['grad_sum'][i] = grad.clone()
+                    self.state['grad_avg'][i] = grad.clone()
+                else:
+                    self.state['grad_sum'][i] += grad
+                    self.state['grad_avg'][i] = ((self.state['grad_avg'][i] * self.state['t']) + grad) / (self.state['t'] + 1)
+
+                grad_avg = self.state['grad_avg'][i]
+                grad_sum = self.state['grad_sum'][i]
+                p.data.add_(-lr * (grad_avg + (grad - grad_avg) / (self.state['t'] + 1)) - momentum * (grad_sum / (self.state['t'] + 1) - grad_avg), alpha=1 - weight_decay * lr)
+                if nesterov:
+                    p.data.add_(-momentum * lr, alpha=momentum)
+
+        self.state['t'] += 1
 
         return loss
