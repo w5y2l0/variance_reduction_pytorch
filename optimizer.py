@@ -1,4 +1,5 @@
 import math
+import numpy as np
 import torch
 import itertools as it
 from torch.optim import Optimizer
@@ -185,3 +186,183 @@ class STORM(Optimizer):
                 prev_grad = grad
 
         return loss
+
+
+
+class SAGA(Optimizer):
+    """
+    PyTorch implementation of the SAGA optimizer.
+    SAGA: A Fast Incremental Gradient Method With Support for Non-Strongly Convex Composite Objectives
+    https://arxiv.org/abs/1407.0202
+    """
+    def __init__(self, params, lr=1e-2, momentum=0, weight_decay=0):
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+        self.state = defaultdict(dict)
+
+        for group in self.param_groups:
+            for p in group['params']:
+                state = self.state[p]
+                state['g'] = torch.zeros_like(p.data)
+                state['prev_grad'] = torch.zeros_like(p.data)
+                state['momentum_buffer'] = torch.zeros_like(p.data)
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            lr = group['lr']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data
+                state = self.state[p]
+
+                # SAGA update
+                g = state['g']
+                prev_grad = state['prev_grad']
+                g.add_(-prev_grad).add_(grad)
+                state['prev_grad'] = grad.clone()
+                p.data.add_(-lr, (g / len(self.param_groups)) + weight_decay * p.data)
+
+                # Momentum
+                if momentum != 0:
+                    buf = state['momentum_buffer']
+                    buf.mul_(momentum).add_(p.grad.data)
+                    p.data.add_(-lr, buf)
+
+                # Weight decay
+                if weight_decay != 0:
+                    p.data.add_(-lr * weight_decay, p.data)
+
+        return loss
+    
+
+class SVRG(Optimizer):
+    """
+    PyTorch implementation of SVRG.
+    SVRG: A Variance Reduction Technique for Stochastic Gradient Descent, Johnson and Zhang (2013)
+    """
+    def __init__(self, params, lr, L, epoch_size, svrg_ratio):
+        """
+        :param params: parameters to optimize
+        :param lr: learning rate
+        :param L: smoothness constant
+        :param epoch_size: number of iterations per epoch
+        :param svrg_ratio: number of SVRG steps per epoch
+        """
+        if not 0.0 < svrg_ratio <= 1.0:
+            raise ValueError(f'Invalid SVRG ratio: {svrg_ratio}')
+        defaults = dict(lr=lr, L=L, epoch_size=epoch_size, svrg_ratio=svrg_ratio)
+        super(SVRG, self).__init__(params, defaults)
+
+    def step(self, epoch, closure=None):
+        """
+        Performs a single SVRG optimization step.
+        :param epoch: current epoch
+        :param closure: an optional closure that reevaluates the model and returns the loss.
+        :return: loss
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            lr = group['lr']
+            L = group['L']
+            epoch_size = group['epoch_size']
+            svrg_ratio = group['svrg_ratio']
+            n = len(group['params'])
+
+            # Compute the full gradient and store it
+            full_grads = []
+            with torch.no_grad():
+                for p in group['params']:
+                    if p.grad is None:
+                        continue
+                    full_grads.append(p.grad.data.clone().detach())
+                full_grad = torch.cat(full_grads).mean(dim=0)
+
+            # Update each parameter using SVRG
+            for i in range(int(epoch_size * svrg_ratio)):
+                idx = np.random.randint(n)
+                p = group['params'][idx]
+                if p.grad is None:
+                    continue
+
+                # Compute the difference between the current gradient and the initial gradient
+                initial_grads = []
+                with torch.no_grad():
+                    for p in group['params']:
+                        if p.grad is None:
+                            continue
+                        initial_grads.append(p.grad.data.clone().detach())
+                    initial_grad = torch.cat(initial_grads).mean(dim=0)
+                grad_diff = p.grad.data - initial_grad[idx]
+
+                # Compute the difference between the current full gradient and the initial full gradient
+                full_grad_diff = full_grads[idx] - initial_grads[idx]
+
+                # Update the parameter
+                p.data.add_(-lr * grad_diff + lr / epoch_size * full_grad_diff)
+
+        return loss
+
+
+
+class SARAH(Optimizer):
+    """
+    PyTorch implementation of SARAH optimizer
+    based on the paper "Stochastic Recursive Gradient Algorithm for Optimization with Structured Sparsity",
+    available at https://arxiv.org/abs/1406.6078
+    """
+
+    def __init__(self, params, lr=1e-3, beta=0.9, L=1):
+        """
+        Args:
+            params: model parameters
+            lr: learning rate (default: 1e-3)
+            beta: momentum term (default: 0.9)
+            L: smoothing term (default: 1)
+        """
+        defaults = dict(lr=lr, beta=beta, L=L)
+        super().__init__(params, defaults)
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            lr = group['lr']
+            beta = group['beta']
+            L = group['L']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                state = self.state[p]
+
+                iter_num = state.get('iter', 0)
+                grad_prev = state.get('grad_prev', torch.zeros_like(p.data))
+
+                if iter_num == 0:
+                    # initialize the gradients at t = 0
+                    grad_prev.copy_(grad)
+                else:
+                    # update the gradients using SARAH rule
+                    p.data.add_(-lr, grad - grad_prev).add_(L, p.data)
+                    grad_prev.add_(grad)
+
+                state['iter'] = iter_num + 1
+                state['grad_prev'] = grad_prev
+
+        return loss
+
