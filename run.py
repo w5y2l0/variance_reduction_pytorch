@@ -10,6 +10,8 @@ from torch.utils.data import DataLoader
 import torch.optim as optim
 from trainingmonitor import TrainingMonitor
 from optimizer import Lookahead,STORM
+import wandb
+wandb.login()
 
 epochs = 30
 batch_size = 128
@@ -24,7 +26,7 @@ model.to(device)
 parser = argparse.ArgumentParser(description='CIFAR10')
 parser.add_argument("--model", type=str, default='ResNet18')
 parser.add_argument("--task", type=str, default='image')
-parser.add_argument("--optimizer", default='lookahead',type=str,choices=['lookahead','adam','storm'])
+parser.add_argument("--optimizer", default='storm',type=str,choices=['lookahead','adam','storm'])
 args = parser.parse_args()
 
 if args.optimizer == 'lookahead':
@@ -54,6 +56,7 @@ def train(train_loader):
         optimizer.step()
         pbar(step = batch_idx,info = {'loss':loss.item()})
         train_loss.update(loss.item(),n =1)
+    wandb.log({"train_loss": train_loss.avg})
     return {'loss':train_loss.avg}
 
 def test(test_loader):
@@ -73,6 +76,7 @@ def test(test_loader):
             valid_acc.update(correct, n=1)
             count += data.size(0)
             pbar(step=batch_idx)
+        wandb.log({"test_accuracy": valid_acc.sum /count,"test_loss":valid_loss.avg})
     return {'valid_loss':valid_loss.avg,
             'valid_acc':valid_acc.sum /count}
 
@@ -103,6 +107,9 @@ loaders = {
                         num_workers=10, pin_memory=True,
                         drop_last=False)
 }
+wandb.init(project="ML703", config=dict(
+    epochs=30,
+    batch_size=128))
 
 for epoch in range(1, epochs + 1):
     train_log = train(loaders['train'])
