@@ -103,6 +103,9 @@ loaders = {
                         num_workers=10, pin_memory=True,
                         drop_last=False)
 }
+wandb.init(project="ML703", config=dict(
+    epochs=30,
+    batch_size=128))
 
 for epoch in range(1, epochs + 1):
     train_log = train(loaders['train'])
