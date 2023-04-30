@@ -9,7 +9,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import torch.optim as optim
 from trainingmonitor import TrainingMonitor
-from optimizer import Lookahead
+from optimizer import Lookahead,STORM
 
 epochs = 30
 batch_size = 128
@@ -24,13 +24,17 @@ model.to(device)
 parser = argparse.ArgumentParser(description='CIFAR10')
 parser.add_argument("--model", type=str, default='ResNet18')
 parser.add_argument("--task", type=str, default='image')
-parser.add_argument("--optimizer", default='lookahead',type=str,choices=['lookahead','adam'])
+parser.add_argument("--optimizer", default='lookahead',type=str,choices=['lookahead','adam','storm'])
 args = parser.parse_args()
 
 if args.optimizer == 'lookahead':
     arch = 'ResNet18_Lookahead_adam'
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     optimizer = Lookahead(optimizer=optimizer,k=5,alpha=0.5)
+elif args.optimizer == 'storm':
+    arch = 'ResNet18_storm_adam'
+    # optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = STORM(model.parameters(),k=0.1, w=0.1, c=1, weight_decay=0) 
 else:
     arch = 'ResNet18_Adam'
     optimizer = optim.Adam(model.parameters(), lr=0.001)
